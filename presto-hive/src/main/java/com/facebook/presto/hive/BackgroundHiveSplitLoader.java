@@ -60,7 +60,8 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executor;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.IntPredicate;
-
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 import static com.facebook.presto.hive.HiveBucketing.getVirtualBucketNumber;
 import static com.facebook.presto.hive.HiveColumnHandle.pathColumnHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_BAD_DATA;
@@ -159,7 +160,7 @@ public class BackgroundHiveSplitLoader
         this.partitions = new ConcurrentLazyQueue<>(requireNonNull(partitions, "partitions is null"));
         this.hdfsContext = new HdfsContext(session, table.getDatabaseName(), table.getTableName());
         this.schedulerUsesHostAddresses = schedulerUsesHostAddresses;
-    }
+   }
 
     @Override
     public void start(HiveSplitSource splitSource)
@@ -418,13 +419,70 @@ public class BackgroundHiveSplitLoader
                 .anyMatch(name -> name.equals("UseFileSplitsFromInputFormat"));
     }
 
-    private Iterator<InternalHiveSplit> createInternalHiveSplitIterator(Path path, FileSystem fileSystem, InternalHiveSplitFactory splitFactory, boolean splittable)
+    private Iterator<InternalHiveSplit> createInternalHiveSplitIterator(Path path, FileSystem fileSystem, InternalHiveSplitFactory splitFactory, boolean splittable) throws IllegalArgumentException, IOException
     {
-        return stream(directoryLister.list(fileSystem, path, namenodeStats, recursiveDirWalkerEnabled ? RECURSE : IGNORED))
-                .map(status -> splitFactory.createInternalHiveSplit(status, splittable))
-                .filter(Optional::isPresent)
-                .map(Optional::get)
+        List<Predicate<Optional<InternalHiveSplit>>> filters = new ArrayList<>();
+        filters.add(Optional::isPresent);
+        
+        Predicate<Optional<InternalHiveSplit>> fileFilter = getTargetPathsFromSymlinksDirs(fileSystem);
+        if(fileFilter != null) {
+            filters.add(fileFilter);    
+        }
+        
+        Stream<Optional<InternalHiveSplit>> s = stream(directoryLister.list(fileSystem, path, namenodeStats, recursiveDirWalkerEnabled ? RECURSE : IGNORED))
+                .map(status -> splitFactory.createInternalHiveSplit(status, splittable));
+        for(Predicate<Optional<InternalHiveSplit>> filter : filters) {
+            s = s.filter(filter);
+        }
+        
+         return s.map(Optional::get)
                 .iterator();
+    }
+    
+    /**
+     * If the hive table has a property filter_input_from_manifest="[filename]" read each line in that file
+     * and turn it into a predicate we can apply to our input splits.
+     * 
+     * This presents an alternative when querying delatlake generated datasets. Quite often a filesystem list
+     * with filter is more performant than reading the manifest and letting hive grab the file status of each
+     * file individually. 
+     * 
+     * @param fileSystem
+     * @param p
+     * @return
+     * @throws IOException
+     */
+    private Predicate<Optional<InternalHiveSplit>> getTargetPathsFromSymlinksDirs(FileSystem fileSystem) throws IOException {
+        String manifestPath = table.getParameters().get("filter_input_from_manifest");
+        if(manifestPath == null) {
+            return null;
+        }
+        
+        List<String> paths = new ArrayList<>();
+        
+        BufferedReader reader = null;
+        try {
+            reader = new BufferedReader(new InputStreamReader(fileSystem.open(new Path(manifestPath))));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                paths.add(line);
+            }
+        } finally {
+            org.apache.hadoop.io.IOUtils.closeStream(reader);
+        }
+        
+        Predicate<Optional<InternalHiveSplit>> filter = new Predicate<Optional<InternalHiveSplit>>() 
+        {
+            @Override
+            public boolean test(Optional<InternalHiveSplit> t) {
+                if(t.isPresent() && paths.contains(t.get().getPath())) {
+                    return true;
+                }
+                return false;
+            }
+        };
+
+        return filter;
     }
 
     private List<InternalHiveSplit> getBucketedSplits(
