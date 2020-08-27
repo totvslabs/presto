@@ -1,7 +1,6 @@
 steps:
   - label: ":java: mdm"
-    # required as buildkite does a detached HEAD checkout
-    command: mvn clean install -skipTests -T1C -ntp --builder smart
+    command: mvn clean install -DskipTests -T1C -ntp --builder smart
     agents:
       queue: maven
       dind: true
