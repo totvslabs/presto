@@ -1,6 +1,8 @@
 steps:
   - label: ":java: mdm"
-    command: mvn clean install -DskipTests -T1C -ntp --builder smart
+    command:
+      - mvn clean install -DskipTests -T1C -ntp --builder smart
+      - ./.buildkite/upload.sh
     agents:
       queue: maven
       dind: true
