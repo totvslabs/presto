@@ -52,10 +52,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executor;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -63,6 +65,7 @@ import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
+import static com.facebook.presto.hive.HivePartition.UNPARTITIONED_ID;
 import static com.facebook.presto.hive.HiveBucketing.getVirtualBucketNumber;
 import static com.facebook.presto.hive.HiveColumnHandle.pathColumnHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_BAD_DATA;
@@ -113,6 +116,7 @@ public class BackgroundHiveSplitLoader
     private final ConcurrentLazyQueue<HivePartitionMetadata> partitions;
     private final Deque<Iterator<InternalHiveSplit>> fileIterators = new ConcurrentLinkedDeque<>();
     private final boolean schedulerUsesHostAddresses;
+    private static final String FILTER_MANIFEST_OPTION_KEY = "filter_input_from_manifest";
 
     // Purpose of this lock:
     // * Write lock: when you need a consistent view across partitions, fileIterators, and hiveSplitSource.
@@ -392,7 +396,7 @@ public class BackgroundHiveSplitLoader
             return hiveSplitSource.addToQueue(getBucketedSplits(path, fs, splitFactory, tableBucketInfo.get(), bucketConversion, partitionName, splittable));
         }
 
-        fileIterators.addLast(createInternalHiveSplitIterator(path, fs, splitFactory, splittable));
+        fileIterators.addLast(createInternalHiveSplitIterator(path, fs, splitFactory, splittable, partition.getHivePartition()));
         return COMPLETED_FUTURE;
     }
 
@@ -421,11 +425,11 @@ public class BackgroundHiveSplitLoader
     }
 
     private Iterator<InternalHiveSplit> createInternalHiveSplitIterator(Path path, FileSystem fileSystem, InternalHiveSplitFactory splitFactory,
-            boolean splittable) throws IllegalArgumentException, IOException
+            boolean splittable, HivePartition partition) throws IllegalArgumentException, IOException
     {
         List<Predicate<Optional<InternalHiveSplit>>> filters = new ArrayList<>();
         filters.add(Optional::isPresent);
-        Predicate<Optional<InternalHiveSplit>> fileFilter = getTargetPathsFromSymlinksDirs(fileSystem);
+        Predicate<Optional<InternalHiveSplit>> fileFilter = buildSymlinkManifestInputSplitPredicate(fileSystem, partition);
         if (fileFilter != null) {
             filters.add(fileFilter);
         }
@@ -442,34 +446,47 @@ public class BackgroundHiveSplitLoader
     }
 
     /**
-     * If the hive table has a property filter_input_from_manifest="[filename]" read each line in that
-     * file and turn it into a predicate we can apply to our input splits.
+     * If the hive table has a property filter_input_from_manifest="[path to symlink manifest, EG /tmp/delta/_symlink_format_manifest/]"
+     * read each line in the manifest file for this partition and turn it into a predicate we can apply to our input splits.
+     * It's also agnostic to the input format enabling you to use MapredParquetInputFormat as well as having the same hive table
+     * for both writing from spark as reading from presto.
      * <p>
-     * This presents an alternative when querying delatlake generated datasets. Quite often a filesystem
-     * list with filter is more performant than reading the manifest and letting hive grab the file
-     * status of each file individually.
+     * This provides an alternative to SymlinkTextInputFormat for querying delatlake generated datasets. SymlinkTextInputFormat
+     * reads the manifests to determine input splits and hits the FS for the filesize on each file (often times
+     * a round trip to S3). This pathway enables presto to grab file sizes in bulk via the directory list operation and filter
+     * out files not contained within the manifest.
+     * <p>
+     * Compared to SymlinkTextInputFormat this pathway will outperform when the ratio of files in the manifest to files
+     * that haven't been vacuumed is lowish (EG deltalakes with short vacuume window or deltalakes with immutable data). This path will
+     * underperform when that ratio is high (EG long maintained history on frequently mutated data).
      * <p>
      * @param fileSystem
      * @param p
      * @return
      * @throws IOException
      */
-    private Predicate<Optional<InternalHiveSplit>> getTargetPathsFromSymlinksDirs(FileSystem fileSystem) throws IOException
+    private Predicate<Optional<InternalHiveSplit>> buildSymlinkManifestInputSplitPredicate(FileSystem fileSystem, HivePartition partition)
     {
-        String manifestPath = table.getParameters().get("filter_input_from_manifest");
-        if (manifestPath == null) {
+        if (!table.getParameters().containsKey(FILTER_MANIFEST_OPTION_KEY)) {
             return null;
         }
-
-        List<String> paths = new ArrayList<>();
+        StringBuilder manifestPathBuilder = new StringBuilder(table.getParameters().get(FILTER_MANIFEST_OPTION_KEY));
+        if (!partition.getPartitionId().equals(UNPARTITIONED_ID)) {
+            manifestPathBuilder.append(partition.getPartitionId()).append("/");
+        }
+        manifestPathBuilder.append("manifest");
+        Set<String> paths = new HashSet<>();
 
         BufferedReader reader = null;
         try {
-            reader = new BufferedReader(new InputStreamReader(fileSystem.open(new Path(manifestPath))));
+            reader = new BufferedReader(new InputStreamReader(fileSystem.open(new Path(manifestPathBuilder.toString()))));
             String line;
             while ((line = reader.readLine()) != null) {
                 paths.add(line);
             }
+        }
+        catch (IOException e) {
+            // A fresh new partition showed before its manifest. Its contents can be filtered out
         }
         finally {
             org.apache.hadoop.io.IOUtils.closeStream(reader);
