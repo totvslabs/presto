@@ -1,0 +1,14 @@
+steps:
+  - label: ":java: mdm"
+    # required as buildkite does a detached HEAD checkout
+    command: mvn clean install -skipTests -T1C -ntp --builder smart
+    agents:
+      queue: maven
+      dind: true
+    timeout_in_minutes: 60
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+        - exit_status: 255
+          limit: 1
