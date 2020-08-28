@@ -65,7 +65,6 @@ import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
-import static com.facebook.presto.hive.HivePartition.UNPARTITIONED_ID;
 import static com.facebook.presto.hive.HiveBucketing.getVirtualBucketNumber;
 import static com.facebook.presto.hive.HiveColumnHandle.pathColumnHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_BAD_DATA;
@@ -74,6 +73,7 @@ import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_BUCKET_FILES;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNKNOWN_ERROR;
+import static com.facebook.presto.hive.HivePartition.UNPARTITIONED_ID;
 import static com.facebook.presto.hive.HiveSessionProperties.isForceLocalScheduling;
 import static com.facebook.presto.hive.HiveUtil.checkCondition;
 import static com.facebook.presto.hive.HiveUtil.getFooterCount;
@@ -492,18 +492,13 @@ public class BackgroundHiveSplitLoader
             org.apache.hadoop.io.IOUtils.closeStream(reader);
         }
 
-        Predicate<Optional<InternalHiveSplit>> filter = new Predicate<Optional<InternalHiveSplit>>() {
+        return new Predicate<Optional<InternalHiveSplit>>() {
             @Override
             public boolean test(Optional<InternalHiveSplit> t)
             {
-                if (t.isPresent() && paths.contains(t.get().getPath())) {
-                    return true;
-                }
-                return false;
+                return t.isPresent() && paths.contains(t.get().getPath());
             }
         };
-
-        return filter;
     }
 
     private List<InternalHiveSplit> getBucketedSplits(
