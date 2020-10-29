@@ -1,10 +1,17 @@
 FROM openjdk:8u151-jdk-alpine3.7
 
-ENV LANG en_US.UTF-8 PRESTO_VERSION
+ARG PRESTO_VERSION
+ENV LANG en_US.UTF-8
 
-COPY presto-cli/target/presto-cli-${PRESTO_VERSION}}-executable.jar /usr/bin/presto
-COPY --chown=presto:presto presto-server/target/presto-server-${PRESTO_VERSION}.tar.gz /usr/lib/presto
+RUN addgroup presto -g 1000 && \
+    adduser -D presto -u 1000 -G presto && \
+    mkdir -p /usr/lib/presto /data/presto && \
+    chown -R "presto:presto" /usr/lib/presto /data/presto
 
-EXPOSE 8080
+ADD presto-cli/target/presto-cli-${PRESTO_VERSION}-executable.jar /usr/bin/presto
+ADD --chown=presto:presto presto-server/target/presto-server-${PRESTO_VERSION} /usr/lib/presto
+
 USER presto:presto
+EXPOSE 8080
+
 CMD ["/usr/lib/presto/bin/run-presto"]
