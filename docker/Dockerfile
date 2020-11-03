@@ -1,12 +1,12 @@
-FROM openjdk:8u272-jdk-slim
+FROM openjdk:8u191-jre-alpine3.9
 
 ARG PRESTO_VERSION
 ENV LANG en_US.UTF-8
 
 RUN addgroup presto -g 1000 && \
     adduser -D presto -u 1000 -G presto && \
-    mkdir -p /usr/lib/presto /data/presto && \
-    chown -R "presto:presto" /usr/lib/presto /data/presto
+    mkdir -p /usr/lib/presto && \
+    chown -R "presto:presto" /usr/lib/presto
 
 ENV PYTHONUNBUFFERED=1
 RUN echo "**** install Python ****" && \
@@ -18,6 +18,15 @@ RUN echo "**** install Python ****" && \
     rm -r /usr/lib/python*/ensurepip && \
     pip3 install --no-cache --upgrade pip setuptools wheel && \
     if [ ! -e /usr/bin/pip ]; then ln -s pip3 /usr/bin/pip ; fi
+
+## - hadoop native dependency lib
+RUN apk add --no-cache bzip2 \
+    fts \
+    fuse \
+    libressl-dev \
+    libtirpc \
+    snappy \
+    zlib
 
 COPY presto-cli/target/presto-cli-${PRESTO_VERSION}-executable.jar /usr/bin/presto
 COPY --chown=presto:presto presto-server/target/presto-server-${PRESTO_VERSION}/presto-server-${PRESTO_VERSION} /usr/lib/presto
