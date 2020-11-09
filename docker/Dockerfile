@@ -16,8 +16,9 @@ RUN apk add --no-cache python3 && \
     pip3 install --no-cache --upgrade pip setuptools wheel && \
     if [ ! -e /usr/bin/pip ]; then ln -s pip3 /usr/bin/pip ; fi
 
-## - hadoop native dependency lib
-RUN apk add --no-cache bzip2 \
+RUN apk add --no-cache curl \
+    # hadoop native dependency lib
+    bzip2 \
     fts \
     fuse \
     libressl-dev \
